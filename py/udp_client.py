@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+from nav_data_manager import NavData
+
 # Configuration
 LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 12345
@@ -127,4 +129,9 @@ def main():
         print('Socket closed.')
 
 if __name__ == "__main__":
-    main()
+    # Here we can test the parsing functionality of the NavData class by running the update_database() method
+    with NavData('nav_data.db') as nd:
+        nd.update_database('C:/X-Plane 12/Global Scenery/Global Airports/Earth nav data/apt.dat')
+        ewr_runways = nd.get_airport('KEWR')
+        print(ewr_runways)
+    #main()
