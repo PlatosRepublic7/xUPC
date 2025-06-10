@@ -1,7 +1,6 @@
 import sqlite3
+from pathlib import Path
 from tqdm import tqdm
-
-APT_DAT_PATH = 'C:/X-Plane 12/Global Scenery/Global Airports/Earth nav data/apt.dat'
 
 
 class LookaheadIterator:
@@ -217,7 +216,72 @@ class NavData:
             print("----------------------")
 
 
-    def update_database(self, apt_dat_path):
+    def _find_all_apt_dat_files(self, xplane_root_path, user_exclusions=None):
+        """
+        Finds all apt.dat files, excluding common directories known to not include them.
+        """
+        root = Path(xplane_root_path)
+        if not root.is_dir():
+            return []
+        
+        print("Scanning for apt.dat files...")
+
+        # --- Define Exclusion Patterns ---
+        default_exclusion_patterns = [
+            'z_',
+            'ortho',
+            'zortho4xp_',
+            'simHeaven_',
+            'x-plane landmarks',
+            'uhd_',
+            'hd_',
+            'library'
+        ]
+
+        # Combine with user-supplied exclusions
+        if user_exclusions:
+            default_exclusion_patterns.extend(user_exclusions)
+
+        all_apt_dat_files = []
+        glob_pattern = "**/Earth nav data/apt.dat"
+
+        # --- Process Custom Scenery with Exclusions ---
+        custom_scenery_path = root.joinpath('Custom Scenery')
+        if custom_scenery_path.exists():
+            print(f"\nScanning '{custom_scenery_path}'...")
+
+            # Get the list of directories first to provide a total for tqdm
+            scenery_items_to_check = [item for item in custom_scenery_path.iterdir() if item.is_dir()]
+
+            for item in scenery_items_to_check:    
+                is_excluded = False
+                    
+                # Check if the directory name matches any exclusion pattern
+                for pattern in default_exclusion_patterns:
+                    if pattern in item.name.lower():
+                        is_excluded = True
+                        break
+                
+                # If the directory is NOT excluded, then we perform the deep search
+                if not is_excluded:
+                    found_files = list(item.glob(glob_pattern))
+                    if found_files:
+                        print(f"    -> Found {len(found_files)} apt.dat file(s) in '{item.name}'")
+                        all_apt_dat_files.extend(found_files)
+        
+        # --- Process Global Scenery (No Exclusions Needed) ---
+        global_scenery_path = root.joinpath('Global Scenery')
+        if global_scenery_path.exists():
+            print(f"\nScanning '{global_scenery_path}'...")
+            found_files = list(global_scenery_path.glob(glob_pattern))
+            if found_files:
+                print(f"    -> Found {len(found_files)} apt.dat file(s) in 'Global Scenery'")
+                all_apt_dat_files.extend(found_files)
+
+        return all_apt_dat_files
+
+
+    def update_database(self, x_plane_root_path):
         """
         Parses the apt.dat file and populates the database.
         This isthe one-time import process.
@@ -226,62 +290,62 @@ class NavData:
         if not self.conn:
             raise RuntimeError("Database connection not open. Use this method within a 'with' block.")
         
-        print("Creating database tables...")
+        root = Path(x_plane_root_path)
+        if not root.is_dir():
+            return
+
+        print("Creating/verifying database tables...")
         self._create_tables()
 
-        # We want to show the parsing progress, so we will use tqdm
-        print("Pre-calculating file size for progress bar...")
-        with open(apt_dat_path, 'r', encoding='utf-8') as f:
-            total_lines = sum(1 for _ in f)
-        
-        print(f"Parsing '{apt_dat_path}' and importing to database...")
+        all_apt_files = self._find_all_apt_dat_files(x_plane_root_path)
 
-        # State variables to track context within the file
-        current_airport_icao = None
-        current_pavement_id = None
-        is_airport_data = False
-        node_order = 0
+        print(f"\nFound {len(all_apt_files)} scenery packs to process...")
 
-        #  Temporary data structures for proper processing and database querying
-        apt_airport_metadata = {}
+        for apt_path in all_apt_files:
+            # Update the description to show the specific scenery pack being processed
+            scenery_pack_name = apt_path.parent.parent.name
 
-        with open(apt_dat_path, 'r', encoding='utf-8') as f:
-            # We wrap the file object with tqdm
-            # 'desc' sets a label for the bar
-            # 'unit' makes the progress count more descriptive
-            progress_bar = tqdm(f, total=total_lines, desc="Parsing apt.dat", unit=" lines")
+            try:
+                # Count the lines in that file for it's progress bar
+                with apt_path.open('r', encoding='utf-8', errors='ignore') as f:
+                    total_lines = sum(1 for _ in f)
 
-            # Wrap the progress_bar iterator with out LookaheadIterator class
-            lookahead_iter = LookaheadIterator(iter(progress_bar))
+                with apt_path.open('r', encoding='utf-8', errors='ignore') as f:
+                    line_progress = tqdm(f, total=total_lines, desc=f"Parsing {scenery_pack_name}", unit=" line")
 
-            # Define the initial parsing state
-            parsing_state = 'NONE'
+                    # Wrap the progress_bar iterator with out LookaheadIterator class
+                    lookahead_iter = LookaheadIterator(iter(line_progress))
 
-            while True:
-                try:
-                    # --- State: NONE ---
-                    # In this state, we are just looking for what state we want to transition into
-                    if parsing_state == 'NONE':
-                        current_line = lookahead_iter.get_next_line()
-                        row_code = int(current_line.split()[0])
-                        
-                        if row_code == 1 or row_code == 16 or row_code == 17 or row_code == 1302:
-                            parsing_state = 'AIRPORT'
-                            lookahead_iter.put_line_back(current_line)
-                    
-                    # --- State: AIRPORT ---
-                    # In this state, we collect and process all the airport information and metadata
-                    elif parsing_state == 'AIRPORT':
-                        self._process_airport_batch(lookahead_iter)
-                        parsing_state = 'NONE'
+                    # Define the initial parsing state
+                    parsing_state = 'NONE'
 
-                except StopIteration:
-                    # The iterator is empty, we have reached the end of the file
-                    print("\nEnd of file reached.")
-                    break
-                except (ValueError, IndexError):
-                    # Skip any malformed lines
-                    continue
+                    while True:
+                        try:
+                            # --- State: NONE ---
+                            # In this state, we are just looking for what state we want to transition into
+                            if parsing_state == 'NONE':
+                                current_line = lookahead_iter.get_next_line()
+                                row_code = int(current_line.split()[0])
+                                
+                                if row_code == 1 or row_code == 16 or row_code == 17 or row_code == 1302:
+                                    parsing_state = 'AIRPORT'
+                                    lookahead_iter.put_line_back(current_line)
+                            
+                            # --- State: AIRPORT ---
+                            # In this state, we collect and process all the airport information and metadata
+                            elif parsing_state == 'AIRPORT':
+                                self._process_airport_batch(lookahead_iter)
+                                parsing_state = 'NONE'
+
+                        except StopIteration:
+                            # The iterator is empty, we have reached the end of the file
+                            break
+                        except (ValueError, IndexError):
+                            # Skip any malformed lines
+                            continue
+            except Exception as e:
+                print(f"\nCould not read or parse file: {apt_path}")
+                print(f"Error: {e}")
 
         self.conn.commit() # Commit any final transactions
         f.close()

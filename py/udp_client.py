@@ -13,6 +13,9 @@ CONSOLE_UPDATE_HZ = 5
 
 UPDATE_INTERVAL_SECONDS = 1.0 / CONSOLE_UPDATE_HZ
 
+X_PLANE_ROOT_DIR = 'C:/X-Plane 12'
+
+
 def clear_console():
     """Clears the console screen"""
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -131,7 +134,7 @@ def main():
 if __name__ == "__main__":
     # Here we can test the parsing functionality of the NavData class by running the update_database() method
     with NavData('nav_data.db') as nd:
-        nd.update_database('C:/X-Plane 12/Global Scenery/Global Airports/Earth nav data/apt.dat')
-        ewr_runways = nd.get_airport('KEWR')
+        nd.update_database(X_PLANE_ROOT_DIR)
+        ewr_runways = nd.get_airport('EGLL')
         print(ewr_runways)
     #main()
