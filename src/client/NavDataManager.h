@@ -27,6 +27,7 @@ class NavDataManager {
 
         // Helper methods
         void create_tables();
+        void split_string(const std::string& line, std::vector<std::string>& parts);
         std::vector<fs::path> find_all_apt_dat_files(const fs::path& xplane_root_path);
         void process_airport_batch(LookaheadLineReader& reader);
         void insert_airport_data(const json& airport_data);

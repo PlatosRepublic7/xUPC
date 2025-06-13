@@ -1,6 +1,6 @@
 #include "LookaheadLineReader.h"
-#include <sstream>
 #include <iostream>
+#include <sstream>
 #include <iomanip>
 #include <stdexcept>
 
@@ -40,9 +40,18 @@ void LookaheadLineReader::put_line_back(const std::string& line) {
 
 int LookaheadLineReader::get_row_code(const std::string& line) {
     int row_code = -1;
+    std::string s_row_code;
     if (std::isdigit(line[0])) {
-        std::stringstream ss(line);
-        if (ss >> row_code) return row_code;
+        for (char ch : line) {
+            if (isspace(ch)) {
+                if (!s_row_code.empty()) {
+                    row_code = std::stoi(s_row_code);
+                    break;
+                }
+            } else {
+                s_row_code += ch;
+            }
+        }
     }
     return row_code;
 }
@@ -53,14 +62,29 @@ void LookaheadLineReader::display_progress() const {
     if (percentage > 1.0f) percentage = 1.0f;
 
     int bar_width = 50;
-    std::cout << "\r[";
     int pos = static_cast<int>(bar_width * percentage);
+
+    // --- Build the entire output in an in-memory stringstream ---
+    std::stringstream ss;
+    ss << "\r[";
+
+    // Build the bar part
     for (int i = 0; i < bar_width; ++i) {
-        if (i < pos) std::cout << "=";
-        else if (i == pos) std::cout << ">";
-        else std::cout << " ";
+        if (i < pos) {
+            ss << "=";
+        } else if (i == pos) {
+            ss << ">";
+        } else {
+            ss << " ";
+        }
     }
-    std::cout << "] " << std::setw(3) << static_cast<int>(percentage * 100.0) << "%" << std::setw(10) << bytes_processed_ << "/" << total_size_ << " bytes" << std::flush;
+
+    // Add the text part
+    ss << "] " << std::setw(3) << static_cast<int>(percentage * 100.0) << "%"
+       << std::setw(11) << bytes_processed_ << "/" << total_size_ << " bytes";
+
+    // --- Perform a single write to the console and flush ---
+    std::cout << ss.str() << std::flush;
 }
 
 void LookaheadLineReader::finialize_progress() const {
@@ -68,5 +92,5 @@ void LookaheadLineReader::finialize_progress() const {
     for (int i = 0; i < 50; ++i) {
         std::cout << "=";
     }
-    std::cout << "] 100%" << std::setw(5) << bytes_processed_ << "/" << total_size_ << " bytes" << std::endl;
+    std::cout << "] 100%" << std::setw(11) << bytes_processed_ << "/" << total_size_ << " bytes" << std::endl;
 }

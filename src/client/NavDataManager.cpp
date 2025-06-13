@@ -3,10 +3,10 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <sstream>
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <sqlite3.h>
 #include <SQLiteCpp/Transaction.h>
 #include <SQLiteCpp/Statement.h>
@@ -127,7 +127,7 @@ void NavDataManager::process_airport_batch(LookaheadLineReader& reader) {
 
     // Collect all the airport metadata lines from the file into a vector.
     while (reader.get_next_line(current_line)) {
-        reader.display_progress();
+        //reader.display_progress();
         int row_code = reader.get_row_code(current_line);
         if (row_code == 1 || row_code == 16 || row_code == 17 || row_code == 1302) {
             airport_lines.push_back(current_line);
@@ -155,24 +155,31 @@ void NavDataManager::process_airport_batch(LookaheadLineReader& reader) {
     airport_data["datum_lat"] = nullptr;
     airport_data["datum_lon"] = nullptr;
 
+    //std::stringstream ss;
+
+    std::vector<std::string> parts;
     for (const auto& data_line : airport_lines) {
-        std::stringstream ss(data_line);
+        split_string(data_line, parts);
 
-        // Perform granular row_code check and apply data to appropriate stuctures
-        // This line extracts row_code from the stringstream
-        if (!(ss >> row_code)) continue;
+        if (parts.empty()) continue;
 
-        // Switch based on row_code
-        switch (row_code) {
+        try {
+            row_code = std::stoi(parts[0]);
+        } catch (std::exception&) {
+            continue;
+        }
+
+        switch(row_code) {
             case 1:
             {
-                // Extract the fixed-format fields
-                if (ss >> elevation >> dummy_str >> dummy_str >> icao_code) {
-                    // Use std::getline with std::ws (strip leading whitespace) to get the airport name
-                    std::getline(ss >> std::ws, airport_name);
-                    airport_data["elevation"] = elevation;
-                    airport_data["icao_code"] = icao_code;
-                    airport_data["airport_name"] = airport_name;
+                if (parts.size() >= 5) {
+                    airport_data["elevation"] = std::stoi(parts[1]);
+                    airport_data["icao_code"] = parts[4];
+                    std::string name;
+                    for (size_t i = 5; i < parts.size(); ++i) {
+                        name += (i > 5 ? " " : "") + parts[i];
+                    }
+                    airport_data["airport_name"] = name;
                     airport_data["type"] = "Airport";
                 }
                 break;
@@ -180,31 +187,30 @@ void NavDataManager::process_airport_batch(LookaheadLineReader& reader) {
             case 16:
             case 17:
             {
-                // The [H] or [S] designators may be either on the left or right of the ICAO
-                std::string type_designator, temp;
-
-                if (ss >> elevation >> dummy_str >> dummy_str >> type_designator >> icao_code) {
-                    // Disambiguate the ICAO from the type_designator
+                if (parts.size() >= 6) {
+                    airport_data["elevation"] = std::stoi(parts[1]);
+                    std::string type_designator, temp, name;
+                    type_designator = parts[4];
+                    icao_code = parts[5];
                     if (icao_code.length() < 4) {
                         temp = icao_code;
                         icao_code = type_designator;
                         type_designator = temp;
                     }
-                    std::getline(ss >> std::ws, airport_name);
-                    airport_data["elevation"] = elevation;
                     airport_data["icao_code"] = icao_code;
-                    airport_data["airport_name"] = airport_name;
+                    for (size_t i = 6; i < parts.size(); ++i) {
+                        name += (i > 6 ? " " : "") + parts[i];
+                    }
+                    airport_data["airport_name"] = name;
                     airport_data["type"] = (row_code == 16 ? "Seaplane" : "Heliport");
                 }
                 break;
             }
             case 1302:
             {
-                std::string key, value;
-                if (ss >> key) {
-                    std::getline(ss >> std::ws, value);
-
-                    // Overwrite the 'null' value in the json object with the real data
+                if (parts.size() >= 3) {
+                    std::string key = parts[1];
+                    std::string value = parts[2];
                     if (airport_data.contains(key)) {
                         // We need to explicitly convert the numeric types
                         if (key == "transition_alt" || key == "transition_level") {
@@ -360,41 +366,102 @@ void NavDataManager::update_database(const std::string& xplane_root_path) {
 
     // Get the list of files
     std::vector<fs::path> apt_files = find_all_apt_dat_files(xplane_root_path);
-    int cur_file_num = 0;
     int total_file_num = apt_files.size();
     std::cout << "Found " << total_file_num << " apt.dat file(s) to process." << std::endl;
 
-    // Next is to loop through the files and process them
-    for (const fs::path& apt_path : apt_files) {
-        LookaheadLineReader reader(apt_path);
-        ++cur_file_num;
-        std::string line;
+    try {
+        SQLite::Transaction transaction(db);
+        int cur_file_num = 0;
+        // Next is to loop through the files and process them
+        for (const fs::path& apt_path : apt_files) {
+            LookaheadLineReader reader(apt_path);
+            ++cur_file_num;
+            std::string line;
 
-        // Display message to console
-        std::cout << "\n(" << cur_file_num << "/" << total_file_num << ") Processing File: " << apt_path.string() << std::endl;
+            // Display message to console
+            std::cout << "\n(" << cur_file_num << "/" << total_file_num << ") Processing File: " << apt_path.string() << std::endl;
 
-        while (reader.get_next_line(line)) {            
-            // Empty lines need no parsing
-            if (line.empty()) continue;
+            auto last_update_time = std::chrono::steady_clock::now();
+            const auto update_interval = std::chrono::milliseconds(50);
 
-            // Display the progress bar
-            reader.display_progress();
-            
-            // Get the row_code for the current line
-            int row_code = reader.get_row_code(line);
+            while (reader.get_next_line(line)) {
+                // Check if it's time to update the progress bar
+                auto current_time = std::chrono::steady_clock::now();
+                if (current_time - last_update_time > update_interval) {
+                    reader.display_progress();
+                    last_update_time = current_time;
+                }
+                // Empty lines need no parsing
+                if (line.empty()) continue;
+                
+                // Get the row_code for the current line
+                int row_code = reader.get_row_code(line);
 
-            // If the row_code is not an integer, continue on to the next loop iteration
-            if (row_code == -1) continue;
+                // If the row_code is not an integer, continue on to the next loop iteration
+                if (row_code == -1) continue;
 
-            // --- Dispatcher ---
-            // Look at the row_code, and determine what kind of block-processing we want to do
-            
-            // AIRPORT METADATA
-            if (row_code == 1 || row_code == 16 || row_code == 17 || row_code == 1302) {
-                reader.put_line_back(line);
-                process_airport_batch(reader);
+                // --- Dispatcher ---
+                // Look at the row_code, and determine what kind of block-processing we want to do
+                
+                // AIRPORT METADATA
+                if (row_code == 1 || row_code == 16 || row_code == 17 || row_code == 1302) {
+                    reader.put_line_back(line);
+                    process_airport_batch(reader);
+                }
             }
+            reader.finialize_progress();
         }
-        reader.finialize_progress();
+
+        std::cout << "Committing database changes..." << std::endl;
+        transaction.commit();
+        std::cout << "Database update complete." << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "A critical error occurred during the database update transaction: " << e.what() << std::endl;
+    }
+}
+
+void NavDataManager::split_string(const std::string& line, std::vector<std::string>& parts) {
+    parts.clear();
+    std::string current_part;
+    current_part.reserve(32);
+
+    for (size_t i = 0; i < line.length(); ) {
+        int char_len = 1; // Default to 1 for ASCII and invalid bytes
+        unsigned char lead = line[i];
+
+        if (lead >= 0xC0 && lead <= 0xDF) {      // 2-byte character
+            char_len = 2;
+        } else if (lead >= 0xE0 && lead <= 0xEF) { // 3-byte character
+            char_len = 3;
+        } else if (lead >= 0xF0 && lead <= 0xF7) { // 4-byte character
+            char_len = 4;
+        }
+        // Note: This is a simplified check that doesn't fully validate but is sufficient for splitting.
+
+        // Ensure we don't read past the end of the string
+        if (i + char_len > line.length()) {
+            char_len = line.length() - i;
+        }
+
+        // The apt.dat format uses simple ASCII whitespace as separators.
+        // We only need to check if the character is a space or tab.
+        // Since these are single-byte ASCII, we only need to check the lead byte.
+        if (lead == ' ' || lead == '\t') {
+            if (!current_part.empty()) {
+                parts.push_back(current_part);
+                current_part.clear();
+            }
+        } else {
+            // Append the entire multi-byte character as a single unit
+            current_part.append(line, i, char_len);
+        }
+
+        // Advance the index by the full length of the character
+        i += char_len;
+    }
+
+    if (!current_part.empty()) {
+        parts.push_back(current_part);
     }
 }
