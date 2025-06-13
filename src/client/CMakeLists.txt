@@ -1,7 +1,11 @@
-add_executable(atc_client main.cpp)
+add_executable(atc_client
+    main.cpp 
+    NavDataManager.cpp
+    LookaheadLineReader.cpp
+)
 
 # Link the client against our shared socket library
-target_link_libraries(atc_client PRIVATE shared_socket)
+target_link_libraries(atc_client PRIVATE shared_socket SQLiteCpp)
 
 # Add include directory for the nlohmann-json dependency
 target_include_directories(atc_client PRIVATE "C:/SDKS/nlohmann-json/include")

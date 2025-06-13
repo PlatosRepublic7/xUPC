@@ -5,9 +5,50 @@
 #include <thread>
 #include "UDPSocket.h"
 #include "nlohmann/json.hpp"
+#include "NavDataManager.h"
 
 using json = nlohmann::json;
 
+void clear_console();
+std::string get_transponder_code(int mode_val);
+void live_flight_data(UDPSocket& client_socket, const char* LISTEN_IP, int LISTEN_PORT);
+
+int main() {
+    // --- Configuration and Socket Data ---
+    const char* LISTEN_IP = "127.0.0.1";
+    int LISTEN_PORT = 12345;
+    UDPSocket client_socket;
+
+    // Initialize and build the navigation database
+    try {
+        const std::string db_path = "nav_data.db";
+        const std::string xplane_root = "C:/X-Plane 12";
+        NavDataManager nav_db(db_path);
+
+        std::cout << "Updating Navigation Database..." << std::endl;
+        nav_db.update_database(xplane_root);
+
+        // Test airport query
+        std::cout << "--- TEST AIRPORT QUERY ---" << std::endl;
+
+        std::string q_icao = "KEWR";
+        if (auto airport = nav_db.get_airport(q_icao)) {
+            // .value() lets you access the json object inside the optional
+            std::cout << "Found " << q_icao << ": " << airport.value().dump(2) << std::endl;
+        } else {
+            std::cout << "Airport " << q_icao << " not found." << std::endl;
+        }
+
+        
+    } catch (std::exception& e) {
+        std::cerr << "A critical error occured during database setup: " << e.what() << std::endl;
+    }
+    
+    //live_flight_data(client_socket, LISTEN_IP, LISTEN_PORT);
+    
+
+    return 0;
+}
 
 void clear_console() {
 #ifdef _WIN32
@@ -31,29 +72,26 @@ std::string get_transponder_mode(int mode_val) {
     }
 }
 
-
-int main() {
-    // --- Configuration and Socket Initialization (remains the same) ---
-    const char* LISTEN_IP = "127.0.0.1";
-    int LISTEN_PORT = 12345;
+void live_flight_data(UDPSocket& client_socket, const char* LISTEN_IP, int LISTEN_PORT) {
+    /*
+        This is the function that runs the real-time UDP data stream for flight data
+    */
     const int BUFFER_SIZE = 4096;
-    const auto UPDATE_INTERVAL = std::chrono::milliseconds(1000 / 5);
 
-    UDPSocket client_socket;
+    // Initialize the client_socket
     if (!client_socket.initialize(LISTEN_IP, 1, LISTEN_PORT)) {
         std::cerr << "Error: Failed to initialize and bind socket." << std::endl;
-        return 1;
     }
+
     std::cout << "Socket created and bound successfully. Waiting for data..." << std::endl;
 
     auto last_update_time = std::chrono::steady_clock::now();
+    const auto UPDATE_INTERVAL = std::chrono::milliseconds(1000 / 5);
     json latest_aircraft_data;
 
     while (true) {
         try {
             char buffer[BUFFER_SIZE];
-
-            // It's good practice to clear the buffer before use.
             std::memset(buffer, 0, BUFFER_SIZE);
 
             std::string sender_ip;
@@ -62,11 +100,10 @@ int main() {
 
             if (bytes_received > 0) {
                 buffer[bytes_received] = '\0';
-                
-                // The parsing is now inside the specific try-catch block.
+
                 latest_aircraft_data = json::parse(buffer);
 
-                // --- Display Logic (moved inside the 'if' for clarity) ---
+                // --- Display Logic ---
                 auto current_time = std::chrono::steady_clock::now();
                 if (current_time - last_update_time > UPDATE_INTERVAL) {
                     clear_console();
@@ -111,7 +148,7 @@ int main() {
                 }
             }
         } 
-        // FIX #2: Catch specific exceptions to get more detailed error info.
+        // Catch specific exceptions to get more detailed error info.
         catch (const json::parse_error& e) {
             // This will tell you exactly what went wrong with the JSON packet.
             std::cerr << "JSON Parse Error: " << e.what() << std::endl;
@@ -124,12 +161,7 @@ int main() {
 
         // Small sleep to prevent the loop from consuming 100% CPU if data flow stops.
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    // This part of the code is now effectively unreachable unless you add
-    // a different way to break the loop (e.g., checking for a keypress).
+        }
     client_socket.cleanup();
     std::cout << "Socket closed." << std::endl;
-
-    return 0;
 }

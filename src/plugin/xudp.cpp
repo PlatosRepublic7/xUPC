@@ -19,8 +19,8 @@ using json = nlohmann::json;
 
 // Configuration for  UDP
 static UDPSocket g_udp_socket;
-const char* PYTHON_CLIENT_IP = "127.0.0.1";
-int PYTHON_CLIENT_PORT = 12345;
+const char* CLIENT_IP = "127.0.0.1";
+int CLIENT_PORT = 12345;
 float SEND_INTERVAL_SECONDS = 1.0f / 30.0f; // Send data 30 times per second
 
 // DataRefs
@@ -100,7 +100,7 @@ PLUGIN_API int XPluginStart(
     strncpy_s(outDesc, 256, plugin_desc.c_str(), _TRUNCATE);
 
     // Initialize UDPSocket
-    if (!g_udp_socket.initialize(PYTHON_CLIENT_IP, PYTHON_CLIENT_PORT)) {
+    if (!g_udp_socket.initialize(CLIENT_IP, CLIENT_PORT)) {
         XPLMDebugString("xUPC: FATAL - Failed to initialize UDP Socket.\n");
         return 0;
     }
