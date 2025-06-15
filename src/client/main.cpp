@@ -29,14 +29,23 @@ int main() {
         nav_db.update_database(xplane_root);
 
         // Test airport query
-        std::cout << "--- TEST AIRPORT QUERY ---" << std::endl;
+        std::cout << "\n--- TEST AIRPORT QUERY ---" << std::endl;
 
-        std::string q_icao = "KEWR";
+        std::string q_icao = "KSEA";
         if (auto airport = nav_db.get_airport(q_icao)) {
             // .value() lets you access the json object inside the optional
             std::cout << "Found " << q_icao << ": " << airport.value().dump(2) << std::endl;
         } else {
             std::cout << "Airport " << q_icao << " not found." << std::endl;
+        }
+
+        std::cout << "-------------------------" << std::endl;
+        std::cout << "\n--- TEST RUNWAY QUERY ---" << std::endl;
+        std::vector<json> runways = nav_db.get_runways(q_icao);
+        std::cout << "\nFound " << runways.size() << " runways for " << q_icao << ":" << std::endl;
+
+        for (const auto& runway : runways) {
+            std::cout << "\n" << runway.dump(2) << std::endl; 
         }
 
         

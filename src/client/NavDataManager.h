@@ -20,10 +20,12 @@ class NavDataManager {
 
         // Fetches a single airport by its ICAO code
         std::optional<json> get_airport(const std::string& icao);
+        std::vector<json> get_runways(const std::string& icao);
 
     private:
         // The database connection object
         SQLite::Database db;
+        std::string current_icao_;
 
         // Helper methods
         void create_tables();
@@ -31,4 +33,6 @@ class NavDataManager {
         std::vector<fs::path> find_all_apt_dat_files(const fs::path& xplane_root_path);
         void process_airport_batch(LookaheadLineReader& reader);
         void insert_airport_data(const json& airport_data);
+        void process_runway_batch(LookaheadLineReader& reader);
+        void insert_runway_data(std::vector<json>& runway_jsons);
 };

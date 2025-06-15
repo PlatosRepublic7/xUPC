@@ -49,12 +49,20 @@ void NavDataManager::create_tables() {
                 airport_icao TEXT,
                 width REAL,
                 surface INTEGER,
-                end1_id TEXT,
+                end1_rw_number TEXT NOT NULL,
                 end1_lat REAL,
                 end1_lon REAL,
-                end2_id TEXT,
+                end1_d_threshold REAL,
+                end1_rw_marking_code INTEGER,
+                end1_rw_app_light_code INTEGER,
+                end2_rw_number TEXT NOT NULL,
                 end2_lat REAL,
                 end2_lon REAL,
+                end2_d_threshold REAL,
+                end2_rw_marking_code INTEGER,
+                end2_rw_app_light_code INTEGER,
+
+                UNIQUE (airport_icao, end1_rw_number, end2_rw_number),
                 FOREIGN KEY (airport_icao) REFERENCES airports (icao)
             );
         )sql");
@@ -122,26 +130,12 @@ std::vector<fs::path> NavDataManager::find_all_apt_dat_files(const fs::path& xpl
 }
 
 void NavDataManager::process_airport_batch(LookaheadLineReader& reader) {
-    std::vector<std::string> airport_lines;
-    std::string current_line;
-
-    // Collect all the airport metadata lines from the file into a vector.
-    while (reader.get_next_line(current_line)) {
-        //reader.display_progress();
-        int row_code = reader.get_row_code(current_line);
-        if (row_code == 1 || row_code == 16 || row_code == 17 || row_code == 1302) {
-            airport_lines.push_back(current_line);
-        } else {
-            reader.put_line_back(current_line);
-            break;
-        }
-    }
-
     // Process airport metadata lines into a json to be passed to insert_airport_data()
     json airport_data;
-    std::string icao_code, airport_name, dummy_str;
-    int elevation;
+    std::string icao_code, airport_name, dummy_str, current_line;
     int row_code = 0;
+    std::vector<std::string> parts;
+    bool end_of_block = false;
 
     // Initialize all potentially missing fields to null. If we find them in the data
     // we will overwrite the null. If not, they remain null for the database.
@@ -155,19 +149,15 @@ void NavDataManager::process_airport_batch(LookaheadLineReader& reader) {
     airport_data["datum_lat"] = nullptr;
     airport_data["datum_lon"] = nullptr;
 
-    //std::stringstream ss;
-
-    std::vector<std::string> parts;
-    for (const auto& data_line : airport_lines) {
-        split_string(data_line, parts);
+    while (reader.get_next_line(current_line)) {
+        if (end_of_block) {
+            reader.put_line_back(current_line);
+            break;
+        }
+        row_code = reader.get_row_code(current_line);
+        split_string(current_line, parts);
 
         if (parts.empty()) continue;
-
-        try {
-            row_code = std::stoi(parts[0]);
-        } catch (std::exception&) {
-            continue;
-        }
 
         switch(row_code) {
             case 1:
@@ -222,6 +212,12 @@ void NavDataManager::process_airport_batch(LookaheadLineReader& reader) {
                         }
                     }
                 }
+                break;
+            }
+            default:
+            {
+                reader.put_line_back(current_line);
+                end_of_block = true;
                 break;
             }
         }
@@ -314,6 +310,9 @@ void NavDataManager::insert_airport_data(const json& airport_data) {
     } catch (const std::exception& e) {
         std::cerr << "SQLite error inserting data for ICAO " << airport_data.value("icao_code", "[UNKNOWN]") << ": " << e.what() << std::endl;
     }
+    
+    // Set current_icao_ for parsing context
+    current_icao_ = airport_data.value("icao_code", "MISSING_ICAO");
 }
 
 std::optional<json> NavDataManager::get_airport(const std::string& icao) {
@@ -361,6 +360,159 @@ std::optional<json> NavDataManager::get_airport(const std::string& icao) {
     return std::nullopt;
 }
 
+void NavDataManager::process_runway_batch(LookaheadLineReader& reader) {
+    // Process airport metadata lines into a json to be passed to insert_airport_data()
+    json runway_data;
+    std::vector<json> runway_jsons;
+    std::string dummy_str, current_line;
+    int row_code = 0;
+    std::vector<std::string> parts;
+    bool end_of_block = false;
+
+    while (reader.get_next_line(current_line)) {
+        if (end_of_block) {
+            reader.put_line_back(current_line);
+            break;
+        }
+        row_code = reader.get_row_code(current_line);
+        split_string(current_line, parts);
+
+        if (parts.empty()) continue;
+
+        switch (row_code) {
+            case 100:
+            {
+                if (parts.size() == 26) {
+                    try{
+                        runway_data["airport_icao"] = current_icao_;
+                        runway_data["width"] = std::stof(parts[1]);
+                        runway_data["surface"] = std::stoi(parts[2]);
+                        runway_data["end1_rw_number"] = parts[8];
+                        runway_data["end1_lat"] = std::stod(parts[9]);
+                        runway_data["end1_lon"] = std::stod(parts[10]);
+                        runway_data["end1_d_threshold"] = std::stof(parts[11]);
+                        runway_data["end1_rw_marking_code"] = std::stoi(parts[13]);
+                        runway_data["end1_rw_app_light_code"] = std::stoi(parts[14]);
+                        runway_data["end2_rw_number"] = parts[17];
+                        runway_data["end2_lat"] = std::stod(parts[18]);
+                        runway_data["end2_lon"] = std::stod(parts[19]);
+                        runway_data["end2_d_threshold"] = std::stof(parts[20]);
+                        runway_data["end2_rw_marking_code"] = std::stoi(parts[22]);
+                        runway_data["end2_rw_app_light_code"] = std::stoi(parts[23]);
+
+                    } catch (std::exception& e) {
+                        std::cerr << "Error parsing runway data for airport " << current_icao_ << ": " << e.what() << std::endl;
+                    }
+                }
+                runway_jsons.push_back(runway_data);
+                break;
+            }
+            default:
+            {
+                reader.put_line_back(current_line);
+                end_of_block = true;
+                break;
+            }
+        }
+    }
+
+    if (!runway_data.is_null() && !runway_data.empty() && runway_data.contains("airport_icao")) {
+        //std::cout << runway_data.dump(2) << std::endl;
+
+        insert_runway_data(runway_jsons);
+    }
+}
+
+void NavDataManager::insert_runway_data(std::vector<json>& runway_jsons) {
+    const std::string sql = R"sql(
+    INSERT INTO runways (airport_icao, width, surface, end1_rw_number, end1_lat, end1_lon, end1_d_threshold, end1_rw_marking_code, end1_rw_app_light_code, end2_rw_number, end2_lat, end2_lon, end2_d_threshold, end2_rw_marking_code, end2_rw_app_light_code)
+    VALUES (:airport_icao, :width, :surface, :end1_rw_number, :end1_lat, :end1_lon, :end1_d_threshold, :end1_rw_marking_code, :end1_rw_app_light_code, :end2_rw_number, :end2_lat, :end2_lon, :end2_d_threshold, :end2_rw_marking_code, :end2_rw_app_light_code)
+    
+    ON CONFLICT(airport_icao, end1_rw_number, end2_rw_number) DO UPDATE SET
+        width = excluded.width,
+        surface = excluded.surface,
+        end1_lat = excluded.end1_lat,
+        end1_lon = excluded.end1_lon,
+        end1_d_threshold = excluded.end1_d_threshold,
+        end1_rw_marking_code = excluded.end1_rw_marking_code,
+        end1_rw_app_light_code = excluded.end1_rw_app_light_code,
+        end2_lat = excluded.end2_lat,
+        end2_lon = excluded.end2_lon,
+        end2_d_threshold = excluded.end2_d_threshold,
+        end2_rw_marking_code = excluded.end2_rw_marking_code,
+        end2_rw_app_light_code = excluded.end2_rw_app_light_code;
+    )sql";
+
+    for (const auto& runway_data : runway_jsons) {
+        try {
+            SQLite::Statement query(db, sql);
+
+            query.bind(":airport_icao",             current_icao_);
+            query.bind(":width",                    runway_data.value("width", 0.0));
+            query.bind(":surface",                  runway_data.value("surface", 0));
+            query.bind(":end1_rw_number",           runway_data.value("end1_rw_number", ""));
+            query.bind(":end1_lat",                 runway_data.value("end1_lat", 0.0));
+            query.bind(":end1_lon",                 runway_data.value("end1_lon", 0.0));
+            query.bind(":end1_d_threshold",         runway_data.value("end1_d_threshold", 0.0));
+            query.bind(":end1_rw_marking_code",     runway_data.value("end1_rw_marking_code", 0));
+            query.bind(":end1_rw_app_light_code",   runway_data.value("end1_rw_app_light_code", 0));
+            query.bind(":end2_rw_number",           runway_data.value("end2_rw_number", ""));
+            query.bind(":end2_lat",                 runway_data.value("end2_lat", 0.0));
+            query.bind(":end2_lon",                 runway_data.value("end2_lon", 0.0));
+            query.bind(":end2_d_threshold",         runway_data.value("end2_d_threshold", 0.0));
+            query.bind(":end2_rw_marking_code",     runway_data.value("end2_rw_marking_code", 0));
+            query.bind(":end2_rw_app_light_code",   runway_data.value("end2_rw_app_light_code", 0));
+
+            query.exec();
+        } catch (const std::exception& e) {
+            std::cerr << "SQLite error inserting data for ICAO " << runway_data.value("airport_icao", "[UNKNOWN]") << ": " << e.what() << std::endl;
+        }
+    }
+}
+
+std::vector<json> NavDataManager::get_runways(const std::string& icao) {
+    std::vector<json> results;
+
+    try {
+        SQLite::Statement query(db, "SELECT * FROM runways WHERE airport_icao = ?");
+        query.bind(1, icao);
+
+        // A while loop with executeStep() will iterate over all results.
+        while (query.executeStep()) {
+            json runway_data;
+
+            // For each row, build the runway_data
+            for (int i = 0; i < query.getColumnCount(); ++i) {
+                const SQLite::Column col = query.getColumn(i);
+                const std::string col_name = col.getName();
+
+                switch (col.getType()) {
+                    case SQLITE_INTEGER:
+                        runway_data[col_name] = col.getInt64();
+                        break;
+                    case SQLITE_FLOAT:
+                        runway_data[col_name] = col.getDouble();
+                        break;
+                    case SQLITE_TEXT:
+                        runway_data[col_name] = col.getString();
+                        break;
+                    case SQLITE_NULL:
+                        runway_data[col_name] = nullptr;
+                        break;
+                    default:
+                        runway_data[col_name] = nullptr;
+                        break;
+                }
+            }
+            results.push_back(runway_data);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "SQLite error fetching runways for " << icao << ": " << e.what() << std::endl;
+    }
+
+    return results;
+}
+
 void NavDataManager::update_database(const std::string& xplane_root_path) {
     std::cout << "Scanning for apt.dat files in: " << xplane_root_path << std::endl;
 
@@ -391,8 +543,12 @@ void NavDataManager::update_database(const std::string& xplane_root_path) {
                     reader.display_progress();
                     last_update_time = current_time;
                 }
-                // Empty lines need no parsing
-                if (line.empty()) continue;
+                // We found a blank line, assume current airport has been parsed,
+                // so reset current_icao_ context and continue to next iteration.
+                if (line.empty()) {
+                    current_icao_ = "";
+                    continue;
+                }
                 
                 // Get the row_code for the current line
                 int row_code = reader.get_row_code(line);
@@ -407,6 +563,12 @@ void NavDataManager::update_database(const std::string& xplane_root_path) {
                 if (row_code == 1 || row_code == 16 || row_code == 17 || row_code == 1302) {
                     reader.put_line_back(line);
                     process_airport_batch(reader);
+                }
+
+                // RUNWAY DATA
+                else if (row_code == 100) {
+                    reader.put_line_back(line);
+                    process_runway_batch(reader);
                 }
             }
             reader.finialize_progress();
